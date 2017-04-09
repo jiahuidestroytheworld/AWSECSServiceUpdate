@@ -1,0 +1,33 @@
+This is the project to set up the testing AWS ECS cluster and services, and update it in a CI/CD environment process. It considers you have already set up a build and deployment process for the docker images. I am using Jenkins and the Cloudbee docker build and deploy plugin and AWS ECS docker plugin to push image to the AWS ECR. 
+
+For continue deployment environment, one approach is to build the application and tag it as latest in the hub, then set up an new cluster on the fly and apply the latest, in this case, you do not need to consider version or update, just set up a new one and delete it after the test finish, then go next step. 
+
+To make this process easy, I use the cloudformation stack ecs-test-service-setup.yaml. What the stack doing is setting up a VPC, 2 subnets, 1 ALB, 1 Cluster and 1 web service, this file is the combination of all these components and each of these components has its own stack definitions in the related folder structure, I upload to S3 and use the templateURL to reference, already make them public, you can adjust it to you own and update the stack. Then adjust the parameter and run the shell script ecs-test-service-setup.sh. It takes certain time for AWS to set up everything ready. Mine is like about 20 min, to check if everything is ready, you can try describe the stack and see if output exist. You can get all the information in the cloudformation console, or check the output of lb url by descriping the stack. When you done your test, use ecs-test-service-delete.sh to remove all components. Check if descripe the stack return error to say it is fully deleted.
+
+If you already has environment set up, then it is much easier, you can try the ecs-cluster-setup.sh to call ecs-cluster-setup.yaml to set up the same former environment but no service,use same delete script of former to delete. 
+
+To update service, first of all, depends on how you define version, or tag, I am currently using Jenkins's build number as version. Thus it should be execute in the same job of generating the images, this process will work to former testing environment too as we just keep useing the same version latest.         
+
+AWS ECS service updating is in following process, 1) registry a updated task definition with the new version, which will create a new reversion of the task definition. 2) update the service with the new task definition.   
+
+For 1), first you need to have a task definition, I have helloworldtask.json file in the ECS folder, since we have the new build number in the same job, this is simplely just replace the text in the file to the version number. use the following
+command
+
+sed -e "s;latest;${BUILD_NUMBER};g" ECS/helloworldtask.json > ${NAME}-v_${BUILD_NUMBER}.json
+
+I do not adjust it much to a common style as it is the definition of the task and container, you may need to set up lots customize fields yourself too. Now we get the new task definition. use following command to registry it
+
+#Register the task definition in the repository
+aws ecs register-task-definition --family ${FAMILY} --cli-input-json file://${NAME}-v_${BUILD_NUMBER}.json --region ${REGION}
+
+it will print out the task definition in return, and we can get revision number from following command
+
+#Get latest revision
+REVISION=`aws ecs describe-task-definition --task-definition ${NAME} --region ${REGION} | jq .taskDefinition.revision`
+
+now you have everything ready, try following command to update the service
+
+aws ecs update-service --cluster ${CLUSTER} --region ${REGION} --service ${SERVICE_NAME} --task-definition ${FAMILY}:${REVISION} --desired-count ${DESIRED_COUNT}
+
+Desire count is the number of containers you want. I find ECS is putting each container inside one cluster instance, thus you need to have at least one more cluster intance than containers to make the update. And it takes some time to finish. 
+
